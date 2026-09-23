@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polybot Monitor</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #141821; --line: #232937; --text: #e6e9ef; --muted: #8a93a6;
+    --up: #2fbf71; --down: #e5484d; --accent: #7c8cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: baseline;
+           padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; }
+  .badge { padding: 2px 8px; border-radius: 4px; background: #2a2f45; color: var(--accent); font-size: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 12px 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .stat .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat .v { font-size: 20px; margin-top: 2px; }
+  section { padding: 4px 16px 16px; }
+  h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 8px; }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: normal; background: var(--panel); position: sticky; top: 0; }
+  td:first-child, th:first-child { text-align: left; }
+  .pos { color: var(--up); } .neg { color: var(--down); } .dim { color: var(--muted); }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; width: 80px; display: inline-block; vertical-align: middle; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+  .hot { background: rgba(47,191,113,.08); }
+  #events div { padding: 3px 0; border-bottom: 1px solid var(--line); }
+  #err { color: var(--down); padding: 0 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polybot</h1><span class="badge">PAPER TRADING</span>
+  <span class="dim" id="clock"></span>
+</header>
+<div id="err"></div>
+<div class="stats" id="stats"></div>
+<section>
+  <h2>Live markets</h2>
+  <div class="wrap"><table id="markets"></table></div>
+</section>
+<section>
+  <h2>Positions</h2>
+  <div class="wrap"><table id="positions"></table></div>
+</section>
+<section>
+  <h2>Activity</h2>
+  <div id="events" class="dim"></div>
+</section>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 3) => v == null ? "<span class=dim>-</span>" : Number(v).toFixed(d);
+const sign = (v, d = 3) => v == null ? "<span class=dim>-</span>" :
+  `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}${Number(v).toFixed(d)}</span>`;
+const mmss = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function render(s) {
+  $("clock").textContent = new Date(s.now * 1000).toLocaleTimeString() + ` · cycle ${s.cycles}`;
+  $("err").textContent = s.error ? "Last cycle failed: " + s.error : "";
+  const p = s.portfolio, minEdge = s.config.min_edge;
+  const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  $("stats").innerHTML = [
+    stat("Cash", "$" + fmt(p.cash, 2)),
+    stat("In open positions", "$" + fmt(p.open_cost, 2)),
+    stat("Realised P&L", sign(p.realised_pnl, 2)),
+    stat("Trades / settled", `${p.trades} / ${p.settled}`),
+    stat("Win rate", p.win_rate == null ? "-" : (p.win_rate * 100).toFixed(1) + "%"),
+    stat("Fees paid", "$" + fmt(p.fees_paid, 2)),
+  ].join("");
+
+  $("markets").innerHTML = "<tr><th>Market</th><th>Ends in</th><th>Progress</th><th>Spot</th><th>Strike</th>" +
+    "<th>Fair up</th><th>Up bid/ask</th><th>Down bid/ask</th><th>Edge up</th><th>Edge down</th></tr>" +
+    s.markets.map((m) => {
+      const hot = Math.max(m.edge_up ?? -1, m.edge_down ?? -1) >= minEdge;
+      return `<tr class="${hot ? "hot" : ""}" title="${esc(m.question)}">
+        <td>${m.asset} ${m.timeframe} <span class=dim>${m.resolution}</span></td>
+        <td>${mmss(m.ends_in)}</td>
+        <td><span class="bar"><i style="width:${(m.progress * 100).toFixed(0)}%"></i></span></td>
+        <td>${fmt(m.spot, m.spot < 10 ? 4 : 2)}</td><td>${fmt(m.strike, m.strike < 10 ? 4 : 2)}</td>
+        <td>${fmt(m.fair_up)}</td>
+        <td>${fmt(m.up_bid, 2)} / ${fmt(m.up_ask, 2)}</td><td>${fmt(m.down_bid, 2)} / ${fmt(m.down_ask, 2)}</td>
+        <td>${sign(m.edge_up)}</td><td>${sign(m.edge_down)}</td></tr>` +
+        (m.error ? `<tr><td colspan=10 class=neg>${esc(m.error)}</td></tr>` : "");
+    }).join("");
+
+  $("positions").innerHTML = "<tr><th>Market</th><th>Side</th><th>Kind</th><th>Shares</th><th>Price</th>" +
+    "<th>Fair</th><th>Cost</th><th>Status</th><th>P&L</th></tr>" +
+    (s.positions.length ? s.positions.map((q) => `<tr>
+      <td title="${esc(q.question)}">${esc(q.slug)}</td><td>${q.side.toUpperCase()}</td><td>${q.kind}</td>
+      <td>${fmt(q.shares, 2)}</td><td>${fmt(q.price)}</td><td>${fmt(q.fair)}</td><td>${fmt(q.cost, 2)}</td>
+      <td>${q.status}</td><td>${q.status === "open" ? "<span class=dim>-</span>" : sign(q.pnl, 2)}</td></tr>`).join("")
+      : "<tr><td colspan=9 class=dim>No trades yet. The bot only trades when fair value beats the ask by more than min_edge after fees.</td></tr>");
+
+  $("events").innerHTML = s.events.map((e) =>
+    `<div>${new Date(e.t * 1000).toLocaleTimeString()} ${esc(e.msg)}</div>`).join("") || "Nothing yet.";
+}
+
+async function tick() {
+  try { render(await (await fetch("/api/state")).json()); }
+  catch (e) { $("err").textContent = "Dashboard can't reach the bot: " + e; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
